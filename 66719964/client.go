@@ -5,7 +5,10 @@ import(
   "log"
   "bytes"
   "encoding/json"
+  "path"
 )
+
+
 
 func main() {
   url := "http://localhost:9000"
@@ -25,4 +28,10 @@ func main() {
     panic("Expected Id field not in response")
   }
   log.Printf("%s - %+v", pd, id)
+
+  resp, err := http.Get(path.Join(url, id))
+  if err != nil {
+    panic(err)
+  } else {
+  }
 }

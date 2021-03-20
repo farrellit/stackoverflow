@@ -1,4 +1,4 @@
-package "github.com/farrellit/stackoverflow/66719964/server"
+package server
 
 import (
 	"encoding/json"
