@@ -1,6 +1,7 @@
 package server
 
 import (
+  "github.com/farrellit/stackoverflow/66719964/contract"
 	"encoding/json"
 	"fmt"
 	"github.com/google/uuid"
@@ -10,36 +11,30 @@ import (
   "regexp"
 )
 
-type PingData struct {
-	Name string
-	Last time.Time
-	Id   string
-}
-
 type PingServer struct {
-	data map[string]*PingData
+	data map[string]*contract.PingData
 	lock sync.RWMutex
 }
 
 func NewPingServer() *PingServer {
 	return &PingServer{
-		data: make(map[string]*PingData),
+		data: make(map[string]*contract.PingData),
 	}
 }
 
-func (ps *PingServer) Create(name string) (pd PingData) {
+func (ps *PingServer) Create(name string) (pd contract.PingData) {
 	id := uuid.New().String()
 	ps.lock.Lock()
 	defer ps.lock.Unlock()
-  ps.data[id] = &PingData{Last: time.Now(), Name: name, Id: id}
+  ps.data[id] = &contract.PingData{Last: time.Now(), Name: name, Id: id}
   pd = *ps.data[id]
 	return
 }
 
-func (ps *PingServer) Update(id, name string) (prev PingData, found bool, cur PingData) {
+func (ps *PingServer) Update(id, name string) (prev contract.PingData, found bool, cur contract.PingData) {
 	ps.lock.Lock()
 	defer ps.lock.Unlock()
-  var pprev *PingData
+  var pprev *contract.PingData
 	pprev, found = ps.data[id]
 	if found {
     prev = *pprev
@@ -52,7 +47,7 @@ func (ps *PingServer) Update(id, name string) (prev PingData, found bool, cur Pi
 	return
 }
 
-func (ps *PingServer) Read(id string) (pd PingData, found bool) {
+func (ps *PingServer) Read(id string) (pd contract.PingData, found bool) {
 	ps.lock.RLock()
 	defer ps.lock.RUnlock()
 	ppd, found := ps.data[id]
@@ -62,7 +57,7 @@ func (ps *PingServer) Read(id string) (pd PingData, found bool) {
   return
 }
 
-func (ps *PingServer) Delete(id string) (pd PingData, found bool) {
+func (ps *PingServer) Delete(id string) (pd contract.PingData, found bool) {
 	ps.lock.RLock()
 	defer ps.lock.RUnlock()
 	ppd, found := ps.data[id]
@@ -71,28 +66,6 @@ func (ps *PingServer) Delete(id string) (pd PingData, found bool) {
     delete(ps.data, id)
   }
   return
-}
-
-type PingRequestData struct {
-	Name string
-}
-
-type BadInputResponse struct {
-	status int
-	Msg    string
-	Schema interface{}
-}
-
-type PingUpdateResponse struct {
-	Previous *PingData
-	Current  PingData
-}
-
-func (br BadInputResponse) Write(w http.ResponseWriter) {
-	if br.status == 0 {
-		br.status = http.StatusBadRequest
-	}
-	writeJson(w, br, br.status)
 }
 
 func writeJson(w http.ResponseWriter, data interface{}, status int) {
@@ -105,6 +78,16 @@ func writeJson(w http.ResponseWriter, data interface{}, status int) {
 	}
 }
 
+func (ps PingServerHttpController) WriteBadHttpResponse (
+  br *contract.BadInputResponse,
+  w http.ResponseWriter,
+) {
+	if br.Status == 0 {
+		br.Status = http.StatusBadRequest
+	}
+	writeJson(w, br, br.Status)
+}
+
 type PingServerHttpController struct {
 	ps *PingServer
 }
@@ -113,13 +96,12 @@ func (ps *PingServer) HttpController() *PingServerHttpController {
 	return &PingServerHttpController{ps: ps}
 }
 
-func (psc *PingServerHttpController) DecodeRequestOrRespond(w http.ResponseWriter, r *http.Request) (msg PingRequestData, success bool) {
-	defer r.Body.Close()
+func (psc *PingServerHttpController) DecodeRequestOrRespond(w http.ResponseWriter, r *http.Request) (msg contract.PingRequestData, success bool) {
 	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
-		BadInputResponse{
-			Msg:    err.Error(),
-			Schema: PingRequestData{},
-		}.Write(w)
+		psc.WriteBadHttpResponse( &contract.BadInputResponse{
+			  Msg:    err.Error(),
+			  Schema: contract.PingRequestData{},
+    }, w)
 	} else {
 		success = true
 	}
@@ -127,6 +109,7 @@ func (psc *PingServerHttpController) DecodeRequestOrRespond(w http.ResponseWrite
 }
 
 func (ps *PingServerHttpController) Handler(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	switch {
 	case r.URL.Path == "/":
 		ps.PostRequest(w, r)
@@ -147,13 +130,13 @@ func (ps *PingServerHttpController) getIdFromPath(path string) (id, suffix strin
 func (ps *PingServerHttpController) RequestById(w http.ResponseWriter, r *http.Request) {
 	id, _ := ps.getIdFromPath(r.URL.Path)
 	notFound := func() {
-		BadInputResponse{
-			status: http.StatusNotFound,
+		ps.WriteBadHttpResponse( &contract.BadInputResponse{
+			Status: http.StatusNotFound,
 			Msg:    "ID " + id + " not found",
 			Schema: nil,
-		}.Write(w)
+    }, w)
 	}
-  dataIfFound := func(pd PingData, ok bool) {
+  dataIfFound := func(pd contract.PingData, ok bool) {
 		if !ok {
 			notFound()
 		} else {
@@ -173,27 +156,27 @@ func (ps *PingServerHttpController) RequestById(w http.ResponseWriter, r *http.R
 		if msg, ok := ps.DecodeRequestOrRespond(w, r); ok {
 			prev, isprev, cur := ps.ps.Update(id, msg.Name)
 			if isprev {
-				writeJson(w, PingUpdateResponse{Previous: &prev, Current: cur}, http.StatusOK)
+				writeJson(w, contract.PingUpdateResponse{Previous: &prev, Current: cur}, http.StatusOK)
 			} else {
 				notFound()
 			}
 		}
 	default:
-		BadInputResponse{
+		ps.WriteBadHttpResponse( &contract.BadInputResponse{
 			Msg:    "This URL accepts only the GET or PUT method",
-			Schema: PingRequestData{},
-			status: http.StatusMethodNotAllowed,
-		}.Write(w)
+			Schema: contract.PingRequestData{},
+			Status: http.StatusMethodNotAllowed,
+		}, w )
 	}
 }
 
 func (ps *PingServerHttpController) PostRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		BadInputResponse{
+		ps.WriteBadHttpResponse(&contract.BadInputResponse{
 			Msg:    "This URL accepts only the " + http.MethodPost + " Method",
-			Schema: PingRequestData{},
-			status: http.StatusMethodNotAllowed,
-		}.Write(w)
+			Schema: contract.PingRequestData{},
+			Status: http.StatusMethodNotAllowed,
+		}, w)
 		return
 	} else if msg, ok := ps.DecodeRequestOrRespond(w, r); ok {
 		pd := ps.ps.Create(msg.Name)

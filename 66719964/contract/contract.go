@@ -1,5 +1,9 @@
 package contract
 
+import(
+  "time"
+)
+
 type PingData struct {
 	Name string
 	Last time.Time
@@ -10,13 +14,16 @@ type PingRequestData struct {
 	Name string
 }
 
-type BadInputResponse struct {
-	status int
-	Msg    string
-	Schema interface{}
-}
-
 type PingUpdateResponse struct {
 	Previous *PingData
 	Current  PingData
 }
+
+type BadInputResponse struct {
+	Status int `json:omit`
+	Msg    string
+	Schema interface{}
+}
+
+
+
