@@ -58,8 +58,8 @@ func (ps *PingServer) Read(id string) (pd contract.PingData, found bool) {
 }
 
 func (ps *PingServer) Delete(id string) (pd contract.PingData, found bool) {
-	ps.lock.RLock()
-	defer ps.lock.RUnlock()
+	ps.lock.Lock()
+	defer ps.lock.Unlock()
 	ppd, found := ps.data[id]
   if found {
     pd = *ppd
@@ -163,7 +163,7 @@ func (ps *PingServerHttpController) RequestById(w http.ResponseWriter, r *http.R
 		}
 	default:
 		ps.WriteBadHttpResponse( &contract.BadInputResponse{
-			Msg:    "This URL accepts only the GET or PUT method",
+			Msg:    "This URL accepts only the GET, DELETE, or PUT method",
 			Schema: contract.PingRequestData{},
 			Status: http.StatusMethodNotAllowed,
 		}, w )

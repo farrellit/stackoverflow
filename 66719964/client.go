@@ -7,99 +7,140 @@ import(
   "bytes"
   "encoding/json"
   "sync"
+  "time"
+  "fmt"
 )
 
 const (
-  surl = "http://localhost:9000"
+  surl = "http://127.0.0.1:9000"
 )
 
-var(
-  client = &http.Client{}
-)
-
-func Create(name string) contract.PingData {
-  var buf bytes.Buffer
-  if err := json.NewEncoder(&buf).Encode(map[string]string{"Name": name}); err != nil {
-    panic(err)
-  }
-  resp, err := http.Post(surl, "application/json", &buf)
-  log.Println("Create: ", resp, err)
-  if err != nil {
-    panic(err)
-  }
-  defer resp.Body.Close()
-  var pd contract.PingData
-  if err := json.NewDecoder(resp.Body).Decode(&pd); err != nil {
-    panic(err)
-  }
-  return pd
+type PingClient struct {
+  client *http.Client
+  id int
+  backoff int
+  name string
+  pd *contract.PingData
 }
 
-func Get(id string) contract.PingData {
-  resp, err := http.Get(surl + "/" + id)
-  log.Println("Get: ", resp, err)
-  if err != nil {
-    panic(err)
+func (pc *PingClient)Backoff(err error) {
+  if pc.backoff == 0 {
+    pc.backoff = 1000
+    return
   }
-  var pd contract.PingData
-  defer resp.Body.Close()
-  if err := json.NewDecoder(resp.Body).Decode(&pd); err != nil {
-    panic(err)
+  pc.backoff = pc.backoff * 2
+  if pc.backoff > 20000 {
+    pc.backoff = 20000
   }
-  return pd
+   log.Printf("Client %d: Backing off %d ms: %s", pc.id, pc.backoff, err.Error())
+  time.Sleep(time.Duration(pc.backoff)*time.Millisecond)
 }
 
-func Put(id, name string) contract.PingUpdateResponse {
-  var buf bytes.Buffer
-  if err := json.NewEncoder(&buf).Encode(map[string]string{"Name": name}); err != nil {
-    panic(err)
-  }
-  req, err := http.NewRequest(http.MethodPut, surl + "/" + id, &buf)
-  if err != nil {
-    panic(err)
-  }
-  resp, err := client.Do(req)
-  log.Println("Put: ", resp, err)
-  if err != nil {
-    panic(err)
-  }
+func Decode(resp *http.Response, target interface{}) {
   defer resp.Body.Close()
-  var pd contract.PingUpdateResponse
-  if err := json.NewDecoder(resp.Body).Decode(&pd); err != nil {
+  if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
     panic(err)
   }
-  return pd
+}
 
+func (pc *PingClient)Encode(data interface{}) *bytes.Buffer {
+  var buf = new(bytes.Buffer)
+  if err := json.NewEncoder(buf).Encode(data); err != nil {
+    panic(err)
+  }
+  return buf
+}
+
+func (pc *PingClient)Create() {
+  buf := pc.Encode(map[string]string{"Name": pc.name})
+  req , err := http.NewRequest(http.MethodPost, surl, buf)
+  if err != nil {
+    panic(err)
+  }
+  pc.DoRequest(req, pc.decodeToData)
+}
+
+func (pc *PingClient)DoRequest(req *http.Request, success func(*http.Response)){
+  req.Header.Set("Content-Type", "application/json")
+  for {
+    resp, err := pc.client.Do(req)
+    if err != nil {
+      pc.Backoff(err)
+      continue
+    }
+    pc.backoff = 0
+    if resp.StatusCode == 404 {
+      panic(fmt.Errorf("Request failed with 404 for %s", req.URL.Path))
+    }
+    success(resp)
+    break
+  }
+}
+
+func (pc *PingClient)decodeToData(resp *http.Response){
+    if pc.pd == nil {
+      pc.pd = new(contract.PingData)
+    }
+    Decode(resp, &pc.pd)
+}
+
+func (pc *PingClient)Get() {
+  req , err := http.NewRequest(http.MethodGet, surl + "/" + pc.pd.Id, nil)
+  if err != nil {
+    panic(err)
+  }
+  pc.DoRequest(req, pc.decodeToData)
+}
+
+func (pc *PingClient)Delete() {
+  req, err := http.NewRequest(http.MethodDelete, surl + "/" + pc.pd.Id, nil)
+  if err != nil {
+    panic(err)
+  }
+  pc.DoRequest(req, func(resp *http.Response){
+    pc.decodeToData(resp)
+    log.Printf("Removed: %+v", pc.pd)
+    pc.pd = nil
+  })
+}
+
+func (pc *PingClient)Put(name string) {
+  buf := pc.Encode(map[string]string{"Name": name})
+  req, err := http.NewRequest(http.MethodPut, surl + "/" + pc.pd.Id, buf)
+  if err != nil {
+    panic(err)
+  }
+  pc.DoRequest(req, func(resp *http.Response){
+    var pd contract.PingUpdateResponse
+    Decode(resp, &pd)
+    *pc.pd = pd.Current
+    pc.name = pc.pd.Name
+  })
 }
 
 func main() {
   var wg sync.WaitGroup
-  for i := 0; i < 3; i++ {
+  client := &http.Client{}
+  for i := 0; i < 50; i++ {
     wg.Add(1)
-    go dostuff(&wg)
+    go dostuff(client, i, &wg)
   }
   wg.Wait()
 }
 
-func dostuff(wg *sync.WaitGroup) {
+func dostuff(client *http.Client, id int, wg *sync.WaitGroup) {
   defer wg.Done()
-  pd := Create("df")
-  log.Println(pd)
-
-  for i := 0; i < 1000; i++ {
-
-  pd = Get(pd.Id)
-  log.Println(pd)
-
-  pr := Put(pd.Id, "daniel")
-  pd = pr.Current
-  log.Println(pr,pd)
-
-  pr = Put(pd.Id, "farrell")
-  pd = pr.Current
-  log.Println(pr,pd)
-
-  pd = Get(pd.Id)
-  log.Println(pd)
+  pc := PingClient{
+    client: client,
+    name: "df",
+    id: id,
   }
+  pc.Create()
+  for i := 0; i < 1000; i++ {
+    pc.Get()
+    pc.Put("daniel")
+    pc.Put("farrell")
+    pc.Get()
+  }
+  pc.Delete()
 }
